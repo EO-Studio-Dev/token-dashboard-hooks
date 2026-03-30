@@ -22,8 +22,6 @@ HOOK_FILE="$HOOKS_DIR/otel_push.py"
 HOOK_HEALTH_FILE="$HOOKS_DIR/hook_health.py"
 BASE_URL="https://raw.githubusercontent.com/EO-Studio-Dev/token-dashboard-hooks/main"
 DASHBOARD_API="https://token-dashboard-iota.vercel.app/api/backfill"
-OTEL_COLLECTOR="https://otel-collector-production-2dac.up.railway.app"
-GEMINI_SETTINGS="$HOME/.gemini/settings.json"
 
 echo ""
 echo "  ╔═══════════════════════════════════════════════════════════╗"
@@ -89,13 +87,13 @@ echo ""
 mkdir -p "$HOOKS_DIR"
 
 # 2. hook 파일 다운로드
-echo "[1/8] otel_push.py 다운로드 중..."
+echo "[1/7] otel_push.py 다운로드 중..."
 curl -sL "$BASE_URL/otel_push.py" -o "$HOOK_FILE"
 chmod +x "$HOOK_FILE"
 echo "      -> $HOOK_FILE"
 
 # 3. 기존 Stop/UserPromptSubmit hook 정리 (세션 블로킹 방지 — launchd 스캔으로 대체)
-echo "[2/8] 레거시 hook 정리 중..."
+echo "[2/7] 레거시 hook 정리 중..."
 
 python3 -c "
 import json, os
@@ -132,7 +130,7 @@ else:
 "
 
 # 4. 과거 transcript backfill → JSON 생성 → Dashboard API로 전송
-echo "[4/8] 과거 transcript backfill 중..."
+echo "[3/7] 과거 transcript backfill 중..."
 
 CLAUDE_DIR="$HOME/.claude/projects"
 if [ ! -d "$CLAUDE_DIR" ]; then
@@ -187,7 +185,7 @@ print(json.dumps(data))
 fi
 
 # 5. Codex CLI 세션 데이터 수집 (1회 즉시 실행)
-echo "[5/8] Codex CLI 데이터 수집 중..."
+echo "[4/7] Codex + Gemini CLI 데이터 수집 중..."
 
 CODEX_SESSIONS="$HOME/.codex/sessions"
 if [ -d "$CODEX_SESSIONS" ]; then
@@ -199,23 +197,35 @@ else
   echo "      ~/.codex/sessions/ 없음. Codex를 사용하면 자동 수집됩니다."
 fi
 
+GEMINI_TMP="$HOME/.gemini/tmp"
+if [ -d "$GEMINI_TMP" ]; then
+  GEMINI_SCRIPT=$(mktemp)
+  curl -sL "$BASE_URL/gemini_push.py" -o "$GEMINI_SCRIPT"
+  python3 "$GEMINI_SCRIPT" --email "$GIT_EMAIL" 2>&1 | sed 's/^/      /'
+  rm -f "$GEMINI_SCRIPT"
+else
+  echo "      ~/.gemini/tmp/ 없음. Gemini를 사용하면 자동 수집됩니다."
+fi
+
 # 6. 스크립트 로컬 설치 + 자동 수집 등록
-echo "[6/8] 스크립트 설치 + 자동 수집 등록 중..."
+echo "[5/7] 스크립트 설치 + 자동 수집 등록 중..."
 
 CODEX_PUSH_LOCAL="$HOOKS_DIR/codex_push.py"
+GEMINI_PUSH_LOCAL="$HOOKS_DIR/gemini_push.py"
 HOOK_HEALTH_LOCAL="$HOOKS_DIR/hook_health.py"
 GENERATE_ACTIVITY_LOCAL="$HOOKS_DIR/generate_activity.py"
 GENERATE_BACKFILL_LOCAL="$HOOKS_DIR/generate_backfill.py"
 
 echo "      스크립트 다운로드 중..."
 curl -sL "$BASE_URL/codex_push.py" -o "$CODEX_PUSH_LOCAL"
+curl -sL "$BASE_URL/gemini_push.py" -o "$GEMINI_PUSH_LOCAL"
 curl -sL "$BASE_URL/hook_health.py" -o "$HOOK_HEALTH_LOCAL"
 curl -sL "$BASE_URL/generate_activity.py" -o "$GENERATE_ACTIVITY_LOCAL"
 curl -sL "$BASE_URL/generate_backfill.py" -o "$GENERATE_BACKFILL_LOCAL"
-chmod +x "$CODEX_PUSH_LOCAL" "$HOOK_HEALTH_LOCAL" "$GENERATE_ACTIVITY_LOCAL" "$GENERATE_BACKFILL_LOCAL"
+chmod +x "$CODEX_PUSH_LOCAL" "$GEMINI_PUSH_LOCAL" "$HOOK_HEALTH_LOCAL" "$GENERATE_ACTIVITY_LOCAL" "$GENERATE_BACKFILL_LOCAL"
 
 # 로컬 파일만 실행 — 네트워크 접근 없음 (보안 경고 방지)
-SCHEDULER_CMD="python3 $HOOK_HEALTH_LOCAL; python3 $CODEX_PUSH_LOCAL --email $GIT_EMAIL"
+SCHEDULER_CMD="python3 $HOOK_HEALTH_LOCAL; python3 $CODEX_PUSH_LOCAL --email $GIT_EMAIL; python3 $GEMINI_PUSH_LOCAL --email $GIT_EMAIL"
 
 if [[ "$(uname)" == "Darwin" ]]; then
   # macOS: launchd 사용 (cron은 Full Disk Access 없으면 silent fail)
@@ -274,7 +284,7 @@ else
   echo "      -> cron 등록 완료: 30분마다 transcript 스캔 + 자동 수집"
 fi
 
-echo "[6.5/8] self-heal hook 등록 중..."
+echo "[6/7] self-heal hook 등록 중..."
 python3 - <<PY
 import json, os
 settings_path = os.path.expanduser("$SETTINGS")
@@ -300,81 +310,9 @@ if not found:
 print("      -> UserPromptSubmit self-heal hook 등록 완료")
 PY
 
-# 7. Gemini CLI 텔레메트리 설정 (네이티브 OTel → Collector 직접 전송)
-echo "[7/8] Gemini CLI 텔레메트리 설정 중..."
-
-if command -v gemini &>/dev/null; then
-  mkdir -p "$HOME/.gemini"
-
-  python3 -c "
-import json, os
-
-path = os.path.expanduser('$GEMINI_SETTINGS')
-otel_endpoint = '$OTEL_COLLECTOR'
-
-# settings.json 읽기 (없으면 빈 객체)
-data = {}
-if os.path.exists(path):
-    try:
-        with open(path, 'r') as f:
-            data = json.load(f)
-    except (json.JSONDecodeError, IOError):
-        data = {}
-
-# telemetry 섹션 설정
-existing = data.get('telemetry', {})
-new_telemetry = {
-    'enabled': True,
-    'target': 'local',
-    'otlpEndpoint': otel_endpoint,
-    'otlpProtocol': 'http',
-}
-
-if existing.get('otlpEndpoint') == otel_endpoint:
-    print('      -> 이미 설정되어 있습니다.')
-else:
-    data['telemetry'] = {**existing, **new_telemetry}
-    with open(path, 'w') as f:
-        json.dump(data, f, indent=2)
-    old_ep = existing.get('otlpEndpoint', '')
-    if old_ep:
-        print('      -> endpoint 업데이트: ' + old_ep + ' → ' + otel_endpoint)
-    else:
-        print('      -> 텔레메트리 설정 완료: ' + otel_endpoint)
-"
-else
-  echo "      Gemini CLI 미설치. 설치 후 install-hook.sh를 다시 실행하면 자동 설정됩니다."
-fi
-
-# 8. Gemini CLI GEMINI.md에 사용자 이메일 기록 (메트릭 식별용)
-echo "[8/8] Gemini CLI 사용자 설정 중..."
-
-if command -v gemini &>/dev/null; then
-  python3 -c "
-import json, os
-
-path = os.path.expanduser('$GEMINI_SETTINGS')
-email = '$GIT_EMAIL'
-
-data = {}
-if os.path.exists(path):
-    try:
-        with open(path, 'r') as f:
-            data = json.load(f)
-    except (json.JSONDecodeError, IOError):
-        data = {}
-
-if data.get('userEmail') == email:
-    print('      -> 이미 설정되어 있습니다.')
-else:
-    data['userEmail'] = email
-    with open(path, 'w') as f:
-        json.dump(data, f, indent=2)
-    print(f'      -> 사용자 이메일 설정: {email}')
-"
-else
-  echo "      건너뜀 (Gemini CLI 미설치)"
-fi
+# 7. 완료
+echo "[7/7] 검증 중..."
+echo "      -> 모든 단계 완료!"
 
 echo ""
 echo "=== 설치 완료 ==="
@@ -384,8 +322,9 @@ echo ""
 if [[ "$(uname)" == "Darwin" ]]; then
   echo "Claude Code: 30분마다 transcript 스캔 (launchd)"
   echo "Codex CLI:   30분마다 자동 수집 (launchd)"
+  echo "Gemini CLI:  30분마다 자동 수집 (launchd)"
 else
   echo "Claude Code: 30분마다 transcript 스캔 (cron)"
   echo "Codex CLI:   30분마다 자동 수집 (cron)"
+  echo "Gemini CLI:  30분마다 자동 수집 (cron)"
 fi
-echo "Gemini CLI:  세션 중 실시간 전송 (네이티브 OTel)"
