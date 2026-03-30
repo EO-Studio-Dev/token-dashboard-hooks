@@ -5,7 +5,7 @@
 #   powershell -Command "irm https://raw.githubusercontent.com/EO-Studio-Dev/token-dashboard-hooks/main/install-hook.ps1 | iex"
 # ============================================
 
-$ErrorActionPreference = "Stop"
+$ErrorActionPreference = "Continue"
 
 Write-Host ""
 Write-Host "========================================" -ForegroundColor Cyan
@@ -56,11 +56,11 @@ if (Test-Path $installDir) {
     Write-Host "  Directory already exists: $installDir" -ForegroundColor Gray
     Write-Host "  Pulling latest changes..." -ForegroundColor Gray
     Push-Location $installDir
-    git pull origin main 2>$null
+    git pull origin main 2>&1 | Out-Null
     Pop-Location
 } else {
     # Sparse checkout - token-dashboard folder only
-    git clone https://github.com/EO-Studio-Dev/token-dashboard-hooks.git $installDir 2>$null
+    git clone https://github.com/EO-Studio-Dev/token-dashboard-hooks.git $installDir 2>&1 | Out-Null
     Push-Location $installDir
     # no sparse checkout needed
     Pop-Location
@@ -83,7 +83,7 @@ Write-Host "  Installed to: $installDir" -ForegroundColor Green
 Write-Host ""
 Write-Host "[3/5] Installing dependencies (npm install)..." -ForegroundColor Yellow
 Push-Location $installDir
-npm install 2>$null
+npm install 2>&1 | Out-Null
 Pop-Location
 Write-Host "  Dependencies installed" -ForegroundColor Green
 
