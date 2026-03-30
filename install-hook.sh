@@ -88,7 +88,7 @@ mkdir -p "$HOOKS_DIR"
 
 # 2. hook 파일 다운로드
 echo "[1/7] otel_push.py 다운로드 중..."
-curl -sL "$BASE_URL/otel_push.py" -o "$HOOK_FILE"
+curl -sfL "$BASE_URL/otel_push.py" -o "$HOOK_FILE"
 chmod +x "$HOOK_FILE"
 echo "      -> $HOOK_FILE"
 
@@ -144,7 +144,7 @@ else
     # generate_backfill.py 다운로드 & 실행
     BACKFILL_SCRIPT=$(mktemp)
     BACKFILL_JSON=$(mktemp)
-    curl -sL "$BASE_URL/generate_backfill.py" -o "$BACKFILL_SCRIPT"
+    curl -sfL "$BASE_URL/generate_backfill.py" -o "$BACKFILL_SCRIPT"
     python3 "$BACKFILL_SCRIPT" --out "$BACKFILL_JSON"
 
     DATA_COUNT=$(python3 -c "import json; print(len(json.load(open('$BACKFILL_JSON'))['data']))" 2>/dev/null || echo "0")
@@ -190,7 +190,7 @@ echo "[4/7] Codex + Gemini CLI 데이터 수집 중..."
 CODEX_SESSIONS="$HOME/.codex/sessions"
 if [ -d "$CODEX_SESSIONS" ]; then
   CODEX_SCRIPT=$(mktemp)
-  curl -sL "$BASE_URL/codex_push.py" -o "$CODEX_SCRIPT"
+  curl -sfL "$BASE_URL/codex_push.py" -o "$CODEX_SCRIPT"
   python3 "$CODEX_SCRIPT" --email "$GIT_EMAIL" 2>&1 | sed 's/^/      /'
   rm -f "$CODEX_SCRIPT"
 else
@@ -200,7 +200,7 @@ fi
 GEMINI_TMP="$HOME/.gemini/tmp"
 if [ -d "$GEMINI_TMP" ]; then
   GEMINI_SCRIPT=$(mktemp)
-  curl -sL "$BASE_URL/gemini_push.py" -o "$GEMINI_SCRIPT"
+  curl -sfL "$BASE_URL/gemini_push.py" -o "$GEMINI_SCRIPT"
   python3 "$GEMINI_SCRIPT" --email "$GIT_EMAIL" 2>&1 | sed 's/^/      /'
   rm -f "$GEMINI_SCRIPT"
 else
@@ -217,11 +217,11 @@ GENERATE_ACTIVITY_LOCAL="$HOOKS_DIR/generate_activity.py"
 GENERATE_BACKFILL_LOCAL="$HOOKS_DIR/generate_backfill.py"
 
 echo "      스크립트 다운로드 중..."
-curl -sL "$BASE_URL/codex_push.py" -o "$CODEX_PUSH_LOCAL"
-curl -sL "$BASE_URL/gemini_push.py" -o "$GEMINI_PUSH_LOCAL"
-curl -sL "$BASE_URL/hook_health.py" -o "$HOOK_HEALTH_LOCAL"
-curl -sL "$BASE_URL/generate_activity.py" -o "$GENERATE_ACTIVITY_LOCAL"
-curl -sL "$BASE_URL/generate_backfill.py" -o "$GENERATE_BACKFILL_LOCAL"
+curl -sfL "$BASE_URL/codex_push.py" -o "$CODEX_PUSH_LOCAL"
+curl -sfL "$BASE_URL/gemini_push.py" -o "$GEMINI_PUSH_LOCAL"
+curl -sfL "$BASE_URL/hook_health.py" -o "$HOOK_HEALTH_LOCAL"
+curl -sfL "$BASE_URL/generate_activity.py" -o "$GENERATE_ACTIVITY_LOCAL"
+curl -sfL "$BASE_URL/generate_backfill.py" -o "$GENERATE_BACKFILL_LOCAL"
 chmod +x "$CODEX_PUSH_LOCAL" "$GEMINI_PUSH_LOCAL" "$HOOK_HEALTH_LOCAL" "$GENERATE_ACTIVITY_LOCAL" "$GENERATE_BACKFILL_LOCAL"
 
 # 로컬 파일만 실행 — 네트워크 접근 없음 (보안 경고 방지)
@@ -264,7 +264,7 @@ PLIST
 
   # 기존 cron 제거 (마이그레이션)
   CRON_TMP=$(mktemp)
-  crontab -l > "$CRON_TMP" 2>/dev/null
+  crontab -l > "$CRON_TMP" 2>/dev/null || true
   if grep -q "eo-codex-push" "$CRON_TMP"; then
     grep -v "eo-codex-push" "$CRON_TMP" > "${CRON_TMP}.new" 2>/dev/null
     crontab "${CRON_TMP}.new"
@@ -276,7 +276,7 @@ else
   # Linux: cron 사용
   CRON_LINE="*/30 * * * * $SCHEDULER_CMD # eo-codex-push"
   CRON_TMP=$(mktemp)
-  crontab -l > "$CRON_TMP" 2>/dev/null
+  crontab -l > "$CRON_TMP" 2>/dev/null || true
   grep -v "eo-codex-push" "$CRON_TMP" > "${CRON_TMP}.new" 2>/dev/null
   echo "$CRON_LINE" >> "${CRON_TMP}.new"
   crontab "${CRON_TMP}.new"

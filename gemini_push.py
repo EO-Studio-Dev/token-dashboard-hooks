@@ -30,7 +30,7 @@ def parse_sessions(base_dir: str) -> list:
         "input_tokens": 0,
         "output_tokens": 0,
         "cache_read_tokens": 0,
-        "cache_creation_tokens": 0,
+        "cache_creation_tokens": 0,  # Gemini thoughts tokens
         "session_count": 0,
         "model": "",
     })
@@ -39,6 +39,8 @@ def parse_sessions(base_dir: str) -> list:
     if not session_files:
         return []
 
+    session_dates = set()  # track unique sessions per date for session_count
+
     for filepath in session_files:
         try:
             with open(filepath, "r", encoding="utf-8", errors="replace") as f:
@@ -46,22 +48,9 @@ def parse_sessions(base_dir: str) -> list:
         except (json.JSONDecodeError, IOError, OSError):
             continue
 
-        # 세션 시작 시간에서 날짜 추출 (KST 변환: +9h)
-        start_time = data.get("startTime", "")
-        if not start_time:
-            continue
+        session_start = data.get("startTime", "")
 
-        date = _to_kst_date(start_time)
-        if not date:
-            continue
-
-        # 메시지에서 토큰 집계
-        session_input = 0
-        session_output = 0
-        session_cached = 0
-        session_thoughts = 0
-        model = ""
-
+        # per-message timestamp 기반 날짜 할당 (자정 넘김 대응)
         for msg in data.get("messages", []):
             if msg.get("type") != "gemini":
                 continue
@@ -69,26 +58,36 @@ def parse_sessions(base_dir: str) -> list:
             if not tokens:
                 continue
 
-            session_input += tokens.get("input", 0)
-            session_output += tokens.get("output", 0)
-            session_cached += tokens.get("cached", 0)
-            session_thoughts += tokens.get("thoughts", 0)
+            msg_input = tokens.get("input", 0)
+            msg_output = tokens.get("output", 0)
+            msg_cached = tokens.get("cached", 0)
+            msg_thoughts = tokens.get("thoughts", 0)
 
-            if msg.get("model"):
-                model = msg["model"]
+            if msg_input + msg_output == 0:
+                continue
 
-        if session_input + session_output == 0:
-            continue
+            # 메시지 자체 timestamp 우선, 없으면 세션 startTime fallback
+            msg_ts = msg.get("timestamp", "") or session_start
+            date = _to_kst_date(msg_ts)
+            if not date:
+                continue
 
-        key = (date, model or "gemini-unknown")
-        day = daily[key]
-        # Gemini input은 cached 포함 — Claude backfill 형식에 맞춰 분리
-        day["input_tokens"] += session_input - session_cached
-        day["output_tokens"] += session_output + session_thoughts
-        day["cache_read_tokens"] += session_cached
-        day["session_count"] += 1
-        if model:
-            day["model"] = model
+            model = msg.get("model", "") or "gemini-unknown"
+            key = (date, model)
+            day = daily[key]
+            # Gemini input은 cached 포함 — Claude backfill 형식에 맞춰 분리
+            day["input_tokens"] += msg_input - msg_cached
+            day["output_tokens"] += msg_output
+            day["cache_read_tokens"] += msg_cached
+            day["cache_creation_tokens"] += msg_thoughts
+            if model:
+                day["model"] = model
+
+            # 세션 카운트: 같은 파일+날짜는 1세션으로
+            session_key = (filepath, date)
+            if session_key not in session_dates:
+                session_dates.add(session_key)
+                day["session_count"] += 1
 
     result = []
     for (date, model), values in sorted(daily.items()):
@@ -98,7 +97,7 @@ def parse_sessions(base_dir: str) -> list:
             "input_tokens": values["input_tokens"],
             "output_tokens": values["output_tokens"],
             "cache_read_tokens": values["cache_read_tokens"],
-            "cache_creation_tokens": 0,
+            "cache_creation_tokens": values["cache_creation_tokens"],
             "session_count": values["session_count"],
         })
     return result

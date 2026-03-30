@@ -526,6 +526,8 @@ def maybe_weekly_full_rescan():
 DAILY_ACTIVITY_MARKER = os.path.expanduser("~/.claude/hooks/.activity_daily")
 ACTIVITY_SCRIPT_URL = "https://raw.githubusercontent.com/EO-Studio-Dev/token-dashboard-hooks/main/generate_activity.py"
 ACTIVITY_SCRIPT_LOCAL = os.path.join(HOOKS_DIR, "generate_activity.py")
+GEMINI_PUSH_URL = "https://raw.githubusercontent.com/EO-Studio-Dev/token-dashboard-hooks/main/gemini_push.py"
+GEMINI_PUSH_LOCAL = os.path.join(HOOKS_DIR, "gemini_push.py")
 ACTIVITY_API_URL = "https://token-dashboard-iota.vercel.app/api/activity"
 
 
@@ -592,6 +594,19 @@ def ensure_activity_script() -> Optional[str]:
         urllib.request.urlretrieve(ACTIVITY_SCRIPT_URL, ACTIVITY_SCRIPT_LOCAL)
         os.chmod(ACTIVITY_SCRIPT_LOCAL, 0o755)
         return "generate_activity.py 신규 설치"
+    except Exception:
+        return None
+
+
+def ensure_gemini_push() -> Optional[str]:
+    """gemini_push.py 로컬 번들 보장. 없으면 다운로드."""
+    if os.path.exists(GEMINI_PUSH_LOCAL):
+        return None
+    try:
+        os.makedirs(HOOKS_DIR, exist_ok=True)
+        urllib.request.urlretrieve(GEMINI_PUSH_URL, GEMINI_PUSH_LOCAL)
+        os.chmod(GEMINI_PUSH_LOCAL, 0o755)
+        return "gemini_push.py 신규 설치"
     except Exception:
         return None
 
@@ -783,6 +798,7 @@ def maybe_daily_reactivity():
 
     # 로컬 번들 보장 (없으면 다운로드, 버전 낮으면 갱신)
     ensure_activity_script()
+    ensure_gemini_push()
 
     script_path = ACTIVITY_SCRIPT_LOCAL
     if not os.path.exists(script_path):
@@ -878,6 +894,9 @@ def self_heal_mode():
     activity_repair = ensure_activity_script()
     if activity_repair:
         repaired.append(activity_repair)
+    gemini_repair = ensure_gemini_push()
+    if gemini_repair:
+        repaired.append(gemini_repair)
 
     # 인프라 복구 외에 즉시 데이터 push — launchd 비활성 유저도 데이터 수집
     try:
@@ -918,10 +937,13 @@ def main():
     removed = cleanup_legacy_hooks()
     repaired.extend(removed)
 
-    # 2.5 generate_activity.py 로컬 번들 보장
+    # 2.5 로컬 번들 보장 (generate_activity.py + gemini_push.py)
     activity_repair = ensure_activity_script()
     if activity_repair:
         repaired.append(activity_repair)
+    gemini_repair = ensure_gemini_push()
+    if gemini_repair:
+        repaired.append(gemini_repair)
 
     # 3. 최근 transcript 스캔 & push (hook 미작동 에디터 대응)
     try:
