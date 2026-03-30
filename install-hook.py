@@ -328,7 +328,7 @@ def step5_install_scripts_and_scheduler(email: str):
     critical_ok = True
     for s in scripts:
         if not download(f"{BASE_URL}/{s}", os.path.join(HOOKS_DIR, s)):
-            if s in ("hook_health.py", "codex_push.py"):
+            if s in ("hook_health.py", "codex_push.py", "gemini_push.py"):
                 critical_ok = False
 
     if not critical_ok:
