@@ -30,10 +30,14 @@ SETTINGS_PATH = os.path.join(os.path.expanduser("~"), ".claude", "settings.json"
 IS_MAC = platform.system() == "Darwin"
 IS_WINDOWS = platform.system() == "Windows"
 
-# Windows UTF-8
+# Windows UTF-8: stdout/stderr 인코딩 강제 (irm | python 파이프에서 한글 깨짐 방지)
 if IS_WINDOWS:
     os.environ["PYTHONUTF8"] = "1"
     os.environ["PYTHONIOENCODING"] = "utf-8"
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    if hasattr(sys.stderr, "reconfigure"):
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 
 def print_banner():
@@ -101,7 +105,7 @@ def check_prerequisites() -> str:
     # git config에서 이메일 감지
     email = ""
     try:
-        r = subprocess.run(["git", "config", "user.email"], capture_output=True, text=True, encoding="utf-8", timeout=5)
+        r = subprocess.run(["git", "config", "user.email"], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5)
         if r.returncode == 0:
             email = r.stdout.strip()
     except Exception:
@@ -240,7 +244,7 @@ def step3_backfill_transcripts(email: str):
         if not download(f"{BASE_URL}/generate_backfill.py", script_path):
             return
         subprocess.run([sys.executable, script_path, "--out", backfill_json],
-                       timeout=120, check=False, encoding="utf-8")
+                       timeout=120, check=False, encoding="utf-8", errors="replace")
 
         if not os.path.exists(backfill_json) or os.path.getsize(backfill_json) == 0:
             print("      파싱 가능한 데이터가 없습니다. 건너뜁니다.")
@@ -287,7 +291,7 @@ def step4_collect_codex_gemini(email: str):
         try:
             if download(f"{BASE_URL}/codex_push.py", script_path):
                 r = subprocess.run([sys.executable, script_path, "--email", email],
-                                   capture_output=True, text=True, encoding="utf-8", timeout=60)
+                                   capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60)
                 for line in (r.stdout or "").splitlines():
                     print(f"      {line}")
         finally:
@@ -305,7 +309,7 @@ def step4_collect_codex_gemini(email: str):
         try:
             if download(f"{BASE_URL}/gemini_push.py", script_path):
                 r = subprocess.run([sys.executable, script_path, "--email", email],
-                                   capture_output=True, text=True, encoding="utf-8", timeout=60)
+                                   capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60)
                 for line in (r.stdout or "").splitlines():
                     print(f"      {line}")
         finally:
@@ -409,7 +413,7 @@ def _register_task_scheduler(py: str, hook_health: str, codex_push: str, gemini_
     task_name = "EO-TokenDashboard"
 
     subprocess.run(["schtasks", "/Delete", "/TN", task_name, "/F"],
-                   capture_output=True, encoding="utf-8", timeout=10)
+                   capture_output=True, encoding="utf-8", errors="replace", timeout=10)
 
     bat_path = os.path.join(HOOKS_DIR, "run-hooks.bat")
     with open(bat_path, "w") as f:
@@ -424,7 +428,7 @@ def _register_task_scheduler(py: str, hook_health: str, codex_push: str, gemini_
         "/TR", f'"{bat_path}"',
         "/SC", "MINUTE", "/MO", "30",
         "/F"
-    ], capture_output=True, text=True, encoding="utf-8", timeout=10)
+    ], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10)
 
     if r.returncode == 0:
         print("      -> Task Scheduler 등록 완료: 30분마다 자동 수집")
