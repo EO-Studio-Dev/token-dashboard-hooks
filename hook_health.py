@@ -129,13 +129,15 @@ def get_email() -> str:
 def build_launchd_plist(email: str) -> str:
     """macOS launchd plist XML 생성"""
     codex_push = os.path.join(HOOKS_DIR, "codex_push.py")
+    gemini_push = os.path.join(HOOKS_DIR, "gemini_push.py")
     hook_health = os.path.join(HOOKS_DIR, "hook_health.py")
-    # 30분마다 실행: 헬스체크 → transcript 스캔 → Codex 수집
+    # 30분마다 실행: 헬스체크 → transcript 스캔 → Codex 수집 → Gemini 수집
     # 로컬 파일만 실행 — 네트워크 접근 없음 (보안 경고 방지)
     # 스크립트 업데이트는 self-heal의 ensure_*() 함수가 버전 체크 후 수행
     script = (
         f'python3 {hook_health}; '
-        f'python3 {codex_push} --email {email}'
+        f'python3 {codex_push} --email {email}; '
+        f'python3 {gemini_push} --email {email}'
     )
     return f"""<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
