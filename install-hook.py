@@ -6,6 +6,9 @@ Claude Code / Codex / Gemini CLI 사용량 자동 수집 설정.
 사용법:
   Mac/Linux:  curl -sfL https://raw.githubusercontent.com/EO-Studio-Dev/token-dashboard-hooks/main/install-hook.py | python3
   Windows:    curl -sfL https://raw.githubusercontent.com/EO-Studio-Dev/token-dashboard-hooks/main/install-hook.py | python
+
+이메일 미리 지정 (pipe 사용 시 권장):
+  curl -sfL ... | EMAIL=june python3
 """
 from __future__ import annotations
 
@@ -51,14 +54,51 @@ def print_banner():
     print()
 
 
+def _read_tty(prompt: str) -> str:
+    """stdin이 pipe여도 TTY에서 직접 입력받기. (Fix #1: curl | python3 대응)"""
+    try:
+        if IS_WINDOWS:
+            import msvcrt
+            sys.stderr.write(prompt)
+            sys.stderr.flush()
+            chars = []
+            while True:
+                c = msvcrt.getwch()
+                if c in ("\r", "\n"):
+                    sys.stderr.write("\n")
+                    break
+                chars.append(c)
+                sys.stderr.write(c)
+            return "".join(chars).strip()
+        else:
+            tty = open("/dev/tty", "r")
+            sys.stderr.write(prompt)
+            sys.stderr.flush()
+            result = tty.readline().strip()
+            tty.close()
+            return result
+    except (OSError, EOFError):
+        return ""
+
+
 def check_prerequisites() -> str:
-    """python3/git 확인 + 이메일 감지/입력. Returns email."""
-    # git
+    """git 확인 + 이메일 감지/입력. Returns email."""
     if not shutil.which("git"):
         print("[!] git이 설치되어 있지 않습니다.")
         sys.exit(1)
 
-    # 이메일
+    # Fix #1: EMAIL 환경변수 우선 (pipe 사용 시)
+    env_email = os.environ.get("EMAIL", "").strip()
+    if env_email:
+        email = env_email if "@" in env_email else f"{env_email}@eoeoeo.net"
+        print(f"사용자 (환경변수): {email}")
+        os.makedirs(HOOKS_DIR, exist_ok=True)
+        with open(os.path.join(HOOKS_DIR, ".otel_email"), "w") as f:
+            f.write(email)
+        print()
+        return email
+
+    # git config에서 이메일 감지
     email = ""
     try:
         r = subprocess.run(["git", "config", "user.email"], capture_output=True, text=True, timeout=5)
@@ -67,23 +107,23 @@ def check_prerequisites() -> str:
     except Exception:
         pass
 
-    if not email or "@eoeoeo.net" not in email:
-        if email:
-            print(f"현재 이메일: {email} (eoeoeo.net이 아닙니다)")
-        print()
-        print("본인의 @eoeoeo.net 이메일을 입력해주세요 (예: june)")
-        try:
-            email_id = input("이메일 아이디: ").strip()
-        except EOFError:
-            print("[!] 이메일을 입력할 수 없습니다. 직접 실행해주세요:")
-            print(f"  python3 <(curl -sfL {BASE_URL}/install-hook.py)")
+    if not email:
+        # git email이 아예 없는 경우만 입력 요구
+        print("@eoeoeo.net 이메일을 입력해주세요 (예: june)")
+        print("개인 이메일(iCloud/Gmail 등)로 git을 사용 중이면 그대로 Enter:")
+
+        email_id = _read_tty("이메일 아이디 (Enter=건너뜀): ")
+        if email_id:
+            email = email_id if "@" in email_id else f"{email_id}@eoeoeo.net"
+            print(f"-> 이메일 설정: {email}")
+        else:
+            print("[!] 이메일을 감지할 수 없습니다.")
+            print("    EMAIL 환경변수로 지정해주세요:")
+            print(f"    curl -sfL {BASE_URL}/install-hook.py | EMAIL=june python3")
             sys.exit(1)
-        if not email_id:
-            print("[!] 이메일을 입력하지 않았습니다.")
-            sys.exit(1)
-        email = email_id if "@" in email_id else f"{email_id}@eoeoeo.net"
-        subprocess.run(["git", "config", "--global", "user.email", email], timeout=5)
-        print(f"-> git email 설정 완료: {email}")
+    elif "@eoeoeo.net" not in email:
+        # 개인 이메일 사용자 — 그대로 사용 (서버에서 alias 매핑)
+        print(f"  (개인 이메일 감지: {email} → 서버에서 자동 매핑됩니다)")
 
     print(f"사용자: {email}")
 
@@ -101,6 +141,10 @@ def download(url: str, dest: str) -> bool:
         urllib.request.urlretrieve(url, dest)
         if not IS_WINDOWS:
             os.chmod(dest, 0o755)
+        # 다운로드된 파일이 HTML 에러 페이지가 아닌지 확인
+        if os.path.getsize(dest) < 100:
+            print(f"      [!] 다운로드 파일이 너무 작습니다: {dest}")
+            return False
         return True
     except (urllib.error.URLError, urllib.error.HTTPError, OSError) as e:
         print(f"      [!] 다운로드 실패: {url} → {e}")
@@ -108,13 +152,24 @@ def download(url: str, dest: str) -> bool:
 
 
 def step1_download_otel_push():
-    """otel_push.py 다운로드"""
+    """otel_push.py 다운로드 — Fix #4: critical 파일 실패 시 exit"""
     print("[1/7] otel_push.py 다운로드 중...")
     dest = os.path.join(HOOKS_DIR, "otel_push.py")
     if download(f"{BASE_URL}/otel_push.py", dest):
         print(f"      -> {dest}")
     else:
-        print("      [!] otel_push.py 다운로드 실패. 계속 진행합니다.")
+        print("      [!] otel_push.py 다운로드 실패. 네트워크를 확인하세요.")
+        sys.exit(1)
+
+
+def _backup_settings():
+    """Fix #5: settings.json 수정 전 백업"""
+    if os.path.exists(SETTINGS_PATH):
+        backup = SETTINGS_PATH + ".bak"
+        try:
+            shutil.copy2(SETTINGS_PATH, backup)
+        except OSError:
+            pass
 
 
 def step2_cleanup_legacy_hooks():
@@ -147,6 +202,7 @@ def step2_cleanup_legacy_hooks():
         hooks[event_type] = cleaned
 
     if removed:
+        _backup_settings()
         with open(SETTINGS_PATH, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2)
         print(f"      -> {', '.join(removed)} hook 제거 완료 (launchd 스캔으로 대체)")
@@ -162,7 +218,6 @@ def step3_backfill_transcripts(email: str):
         print("      ~/.claude/projects 디렉토리가 없습니다. 건너뜁니다.")
         return
 
-    # transcript 파일 수 확인
     count = 0
     for root, dirs, files in os.walk(claude_dir):
         if "subagents" in root:
@@ -175,10 +230,11 @@ def step3_backfill_transcripts(email: str):
 
     print(f"      transcript 파일 {count}개 발견.")
 
-    # generate_backfill.py 다운로드 + 실행
+    # Fix #6: mktemp → mkstemp
     with tempfile.NamedTemporaryFile(suffix=".py", delete=False, mode="w") as sf:
         script_path = sf.name
-    backfill_json = tempfile.mktemp(suffix=".json")
+    fd, backfill_json = tempfile.mkstemp(suffix=".json")
+    os.close(fd)
 
     try:
         if not download(f"{BASE_URL}/generate_backfill.py", script_path):
@@ -186,7 +242,7 @@ def step3_backfill_transcripts(email: str):
         subprocess.run([sys.executable, script_path, "--out", backfill_json],
                        timeout=120, check=False)
 
-        if not os.path.exists(backfill_json):
+        if not os.path.exists(backfill_json) or os.path.getsize(backfill_json) == 0:
             print("      파싱 가능한 데이터가 없습니다. 건너뜁니다.")
             return
 
@@ -224,7 +280,6 @@ def step4_collect_codex_gemini(email: str):
     """Codex + Gemini CLI 1회 수집"""
     print("[4/7] Codex + Gemini CLI 데이터 수집 중...")
 
-    # Codex
     codex_dir = os.path.join(os.path.expanduser("~"), ".codex", "sessions")
     if os.path.isdir(codex_dir):
         with tempfile.NamedTemporaryFile(suffix=".py", delete=False, mode="w") as sf:
@@ -243,7 +298,6 @@ def step4_collect_codex_gemini(email: str):
     else:
         print("      ~/.codex/sessions/ 없음. Codex를 사용하면 자동 수집됩니다.")
 
-    # Gemini
     gemini_dir = os.path.join(os.path.expanduser("~"), ".gemini", "tmp")
     if os.path.isdir(gemini_dir):
         with tempfile.NamedTemporaryFile(suffix=".py", delete=False, mode="w") as sf:
@@ -271,25 +325,33 @@ def step5_install_scripts_and_scheduler(email: str):
                "generate_activity.py", "generate_backfill.py"]
 
     print("      스크립트 다운로드 중...")
+    critical_ok = True
     for s in scripts:
-        download(f"{BASE_URL}/{s}", os.path.join(HOOKS_DIR, s))
+        if not download(f"{BASE_URL}/{s}", os.path.join(HOOKS_DIR, s)):
+            if s in ("hook_health.py", "codex_push.py"):
+                critical_ok = False
+
+    if not critical_ok:
+        print("      [!] 핵심 스크립트 다운로드 실패. 네트워크를 확인하세요.")
+        sys.exit(1)
 
     hook_health = os.path.join(HOOKS_DIR, "hook_health.py")
     codex_push = os.path.join(HOOKS_DIR, "codex_push.py")
     gemini_push = os.path.join(HOOKS_DIR, "gemini_push.py")
 
     py = sys.executable
-    scheduler_cmd = f"{py} {hook_health}; {py} {codex_push} --email {email}; {py} {gemini_push} --email {email}"
+    # 경로에 공백이 있을 수 있으므로 인용부호 사용
+    scheduler_cmd = f'"{py}" "{hook_health}"; "{py}" "{codex_push}" --email {email}; "{py}" "{gemini_push}" --email {email}'
 
     if IS_MAC:
-        _register_launchd(scheduler_cmd, email)
+        _register_launchd(scheduler_cmd)
     elif IS_WINDOWS:
         _register_task_scheduler(py, hook_health, codex_push, gemini_push, email)
     else:
         _register_cron(scheduler_cmd)
 
 
-def _register_launchd(scheduler_cmd: str, email: str):
+def _register_launchd(scheduler_cmd: str):
     """macOS launchd 등록"""
     label = "net.eoeoeo.hook-health"
     plist_dir = os.path.join(os.path.expanduser("~"), "Library", "LaunchAgents")
@@ -322,32 +384,33 @@ def _register_launchd(scheduler_cmd: str, email: str):
     with open(plist_path, "w") as f:
         f.write(plist_xml)
 
-    subprocess.run(["launchctl", "unload", plist_path], capture_output=True, timeout=10)
-    subprocess.run(["launchctl", "load", plist_path], capture_output=True, timeout=10)
+    r = subprocess.run(["launchctl", "unload", plist_path], capture_output=True, timeout=10)
+    r = subprocess.run(["launchctl", "load", plist_path], capture_output=True, timeout=10)
+    if r.returncode != 0:
+        print(f"      [!] launchd 등록 실패: {r.stderr.decode().strip()}")
+    else:
+        print("      -> launchd 등록 완료: 30분마다 자동 수집")
 
     # 기존 cron 제거 (마이그레이션)
     try:
         r = subprocess.run(["crontab", "-l"], capture_output=True, text=True, timeout=5)
         if r.returncode == 0 and "eo-codex-push" in r.stdout:
             lines = [l for l in r.stdout.splitlines() if "eo-codex-push" not in l]
-            p = subprocess.Popen(["crontab", "-"], stdin=subprocess.PIPE, timeout=5)
-            p.communicate(input="\n".join(lines).encode())
+            # Fix #7: Popen에 timeout 제거
+            p = subprocess.Popen(["crontab", "-"], stdin=subprocess.PIPE)
+            p.communicate(input="\n".join(lines).encode(), timeout=5)
             print("      -> 기존 cron 제거 완료 (launchd로 전환)")
     except Exception:
         pass
-
-    print("      -> launchd 등록 완료: 30분마다 자동 수집")
 
 
 def _register_task_scheduler(py: str, hook_health: str, codex_push: str, gemini_push: str, email: str):
     """Windows Task Scheduler 등록"""
     task_name = "EO-TokenDashboard"
 
-    # 기존 태스크 삭제
     subprocess.run(["schtasks", "/Delete", "/TN", task_name, "/F"],
                    capture_output=True, timeout=10)
 
-    # bat 파일 생성 (schtasks가 직접 python 실행이 어려우므로)
     bat_path = os.path.join(HOOKS_DIR, "run-hooks.bat")
     with open(bat_path, "w") as f:
         f.write(f'@echo off\n')
@@ -355,10 +418,10 @@ def _register_task_scheduler(py: str, hook_health: str, codex_push: str, gemini_
         f.write(f'"{py}" "{codex_push}" --email {email}\n')
         f.write(f'"{py}" "{gemini_push}" --email {email}\n')
 
-    # 30분마다 실행
+    # Fix #3: Windows 경로 공백 대응 — /TR에 인용부호
     r = subprocess.run([
         "schtasks", "/Create", "/TN", task_name,
-        "/TR", bat_path,
+        "/TR", f'"{bat_path}"',
         "/SC", "MINUTE", "/MO", "30",
         "/F"
     ], capture_output=True, text=True, timeout=10)
@@ -382,8 +445,9 @@ def _register_cron(scheduler_cmd: str):
     lines = [l for l in existing.splitlines() if "eo-codex-push" not in l]
     lines.append(cron_line)
 
-    p = subprocess.Popen(["crontab", "-"], stdin=subprocess.PIPE, timeout=5)
-    p.communicate(input="\n".join(lines).encode())
+    # Fix #7: Popen에 timeout 제거 → communicate에서 timeout
+    p = subprocess.Popen(["crontab", "-"], stdin=subprocess.PIPE)
+    p.communicate(input="\n".join(lines).encode(), timeout=5)
     print("      -> cron 등록 완료: 30분마다 자동 수집")
 
 
@@ -391,17 +455,22 @@ def step6_self_heal_hook():
     """UserPromptSubmit self-heal hook 등록"""
     print("[6/7] self-heal hook 등록 중...")
 
-    hook_cmd = "bash -lc '(python3 ~/.claude/hooks/hook_health.py --self-heal >/dev/null 2>&1 &) >/dev/null 2>&1'"
+    py = sys.executable
     if IS_WINDOWS:
-        hook_cmd = 'python "%USERPROFILE%/.claude/hooks/hook_health.py" --self-heal'
+        hook_cmd = f'"{py}" "%USERPROFILE%/.claude/hooks/hook_health.py" --self-heal'
+    else:
+        hook_cmd = f"bash -lc '(\"{py}\" ~/.claude/hooks/hook_health.py --self-heal >/dev/null 2>&1 &) >/dev/null 2>&1'"
 
+    # Fix #5: settings.json 파싱 실패 시 기존 파일 보존
     data = {}
     if os.path.exists(SETTINGS_PATH):
         try:
             with open(SETTINGS_PATH, "r", encoding="utf-8") as f:
                 data = json.load(f)
         except (json.JSONDecodeError, OSError):
-            pass
+            # 파싱 실패 시 기존 파일 건드리지 않고 종료
+            print("      -> settings.json 파싱 실패. 건너뜁니다.")
+            return
 
     if "hooks" not in data:
         data["hooks"] = {}
@@ -414,6 +483,7 @@ def step6_self_heal_hook():
     )
 
     if not found:
+        _backup_settings()
         entries.append({"hooks": [{"type": "command", "command": hook_cmd}]})
         data["hooks"]["UserPromptSubmit"] = entries
         with open(SETTINGS_PATH, "w", encoding="utf-8") as f:
@@ -426,17 +496,19 @@ def step7_verify(email: str):
     """검증"""
     print("[7/7] 검증 중...")
 
-    checks = []
+    all_ok = True
     for s in ["otel_push.py", "hook_health.py", "codex_push.py", "gemini_push.py"]:
         path = os.path.join(HOOKS_DIR, s)
         if os.path.exists(path) and os.path.getsize(path) > 100:
-            checks.append(f"  {s} OK")
+            print(f"        {s} OK")
         else:
-            checks.append(f"  {s} MISSING")
+            print(f"        {s} MISSING")
+            all_ok = False
 
-    for c in checks:
-        print(f"      {c}")
-    print("      -> 검증 완료!")
+    if all_ok:
+        print("      -> 검증 완료!")
+    else:
+        print("      -> [!] 일부 파일이 없습니다. 네트워크 확인 후 재실행하세요.")
 
 
 def print_summary(email: str):
