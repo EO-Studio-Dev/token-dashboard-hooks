@@ -8,6 +8,7 @@ Generate Backfill JSON - transcript JSONL을 파싱하여 ClaudeCodeDataPoint[] 
   python3 generate_backfill.py                    # stdout JSON
   python3 generate_backfill.py --out result.json  # 파일로 저장
 """
+SCRIPT_VERSION = "2"
 
 import json
 import os

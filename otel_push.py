@@ -5,6 +5,7 @@ Claude Code 세션 종료 시 transcript JSONL을 파싱하여
 
 내장 텔레메트리의 모델명 오보고 버그를 우회하여 정확한 데이터를 전송.
 """
+SCRIPT_VERSION = "2"
 
 import json
 import hashlib
