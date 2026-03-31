@@ -7,6 +7,7 @@ macOS에서는 cron → launchd 자동 마이그레이션 포함.
 """
 
 import json
+import hashlib
 import os
 import platform
 import subprocess
@@ -18,6 +19,7 @@ from typing import List, Optional
 SETTINGS_PATH = os.path.expanduser("~/.claude/settings.json")
 HOOKS_DIR = os.path.expanduser("~/.claude/hooks")
 HOOK_FILE = os.path.join(HOOKS_DIR, "otel_push.py")
+RECENT_BACKFILL_STATE_DIR = os.path.join(HOOKS_DIR, ".recent_backfill_sent")
 BASE_URL = "https://raw.githubusercontent.com/EO-Studio-Dev/token-dashboard-hooks/main"
 
 IS_WINDOWS = platform.system() == "Windows"
@@ -344,6 +346,48 @@ def parse_transcript_with_dates(transcript_path: str) -> dict:
     return dict(totals)
 
 
+def _recent_backfill_state_path(transcript_path: str) -> str:
+    """최근 transcript 재스캔용 날짜 단위 상태 파일 경로."""
+    digest = hashlib.md5(transcript_path.encode("utf-8")).hexdigest()[:12]
+    return os.path.join(RECENT_BACKFILL_STATE_DIR, f"{digest}.json")
+
+
+def load_recent_backfill_state(transcript_path: str) -> dict:
+    """이전 재스캔에서 보낸 (date, model, token_type) 합계 로드."""
+    path = _recent_backfill_state_path(transcript_path)
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except (IOError, OSError, json.JSONDecodeError):
+        return {}
+
+
+def save_recent_backfill_state(transcript_path: str, totals: dict) -> None:
+    """현재 (date, model, token_type) 합계를 상태 파일에 저장."""
+    os.makedirs(RECENT_BACKFILL_STATE_DIR, exist_ok=True)
+    path = _recent_backfill_state_path(transcript_path)
+    serializable = {}
+    for (date_str, model, token_type), count in totals.items():
+        serializable[f"{date_str}|{model}|{token_type}"] = count
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(serializable, f)
+    except (IOError, OSError):
+        pass
+
+
+def compute_recent_backfill_delta(totals: dict, prev_state: dict) -> dict:
+    """현재 날짜 단위 합계 - 이전 재스캔 합계 = 실제 delta."""
+    delta = {}
+    for (date_str, model, token_type), count in totals.items():
+        key = f"{date_str}|{model}|{token_type}"
+        prev = prev_state.get(key, 0)
+        diff = count - prev
+        if diff > 0:
+            delta[(date_str, model, token_type)] = diff
+    return delta
+
+
 def push_recent_transcripts():
     """최근 transcript를 스캔하여 미전송분을 backfill API로 push.
     hook이 전혀 작동하지 않는 에디터(Zed 등)에서도 데이터를 수집하기 위한 안전망.
@@ -364,13 +408,6 @@ def push_recent_transcripts():
     if not email:
         return
 
-    # otel_push의 상태 관리 로직 재사용
-    try:
-        sys.path.insert(0, HOOKS_DIR)
-        import otel_push
-    except ImportError:
-        return
-
     # 최근 24시간 이내 수정된 transcript만 스캔
     cutoff = time.time() - 86400
     transcripts = glob.glob(os.path.join(TRANSCRIPT_BASE, "**", "*.jsonl"), recursive=True)
@@ -388,46 +425,22 @@ def push_recent_transcripts():
                 continue
 
             # 기존 전송 상태와 비교하여 delta 계산
-            # otel_push의 (model, token_type) 기반 상태 파일 활용
-            totals_flat = defaultdict(int)
-            for (d, m, tt), count in dated_totals.items():
-                totals_flat[(m, tt)] += count
-
-            prev_state = otel_push.load_sent_state(transcript_path)
-            delta_flat = otel_push.compute_delta(dict(totals_flat), prev_state)
-            if not delta_flat:
+            # 날짜별 상태를 따로 저장하여 최신 날짜 토큰이 이전 날짜로 재분배되는 문제 방지
+            prev_state = load_recent_backfill_state(transcript_path)
+            dated_delta = compute_recent_backfill_delta(dated_totals, prev_state)
+            if not dated_delta:
                 continue
 
-            # delta 비율로 날짜별 분배
-            # 각 (model, token_type)의 delta를 날짜별 비율에 따라 배분
             by_date_model = defaultdict(lambda: {"input_tokens": 0, "output_tokens": 0,
                                                   "cache_read_tokens": 0, "cache_creation_tokens": 0})
             type_map = {"input": "input_tokens", "output": "output_tokens",
                         "cache_read": "cache_read_tokens", "cache_creation": "cache_creation_tokens"}
 
-            for (model, token_type), delta_count in delta_flat.items():
+            for (date_str, model, token_type), delta_count in dated_delta.items():
                 field = type_map.get(token_type)
                 if not field:
                     continue
-                # 이 (model, token_type)의 날짜별 분포 계산
-                date_counts = {}
-                for (d, m, tt), count in dated_totals.items():
-                    if m == model and tt == token_type and count > 0:
-                        date_counts[d] = count
-                total_for_type = sum(date_counts.values())
-                if total_for_type == 0:
-                    continue
-                # 비율에 따라 delta를 날짜별로 분배
-                distributed = 0
-                sorted_dates = sorted(date_counts.keys())
-                for i, d in enumerate(sorted_dates):
-                    if i == len(sorted_dates) - 1:
-                        # 마지막 날짜에 나머지 배정 (반올림 오차 방지)
-                        by_date_model[(d, model)][field] += delta_count - distributed
-                    else:
-                        share = int(delta_count * date_counts[d] / total_for_type)
-                        by_date_model[(d, model)][field] += share
-                        distributed += share
+                by_date_model[(date_str, model)][field] += delta_count
 
             records = [{"date": d, "model": m, **tokens}
                        for (d, m), tokens in by_date_model.items()
@@ -442,7 +455,7 @@ def push_recent_transcripts():
             )
             with urllib.request.urlopen(req, timeout=15) as resp:
                 if resp.status == 200:
-                    otel_push.save_sent_state(transcript_path, dict(totals_flat))
+                    save_recent_backfill_state(transcript_path, dated_totals)
                     pushed += 1
         except Exception:
             continue
