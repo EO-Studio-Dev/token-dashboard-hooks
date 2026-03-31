@@ -695,7 +695,13 @@ def collect_health_snapshot(email: str, source: str, repaired: Optional[List[str
     return payload
 
 
-def _report_activity_health(email: str, source: str, status: str, repaired: Optional[List[str]] = None):
+def _report_activity_health(
+    email: str,
+    source: str,
+    status: str,
+    repaired: Optional[List[str]] = None,
+    detail: str = "",
+):
     if not email:
         return
     try:

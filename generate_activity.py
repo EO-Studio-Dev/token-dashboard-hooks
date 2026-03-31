@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-SCRIPT_VERSION = "1"
+SCRIPT_VERSION = "2"
 
 """
 Generate Activity JSON - transcript JSONL을 파싱하여 세션 단위 ActivitySession[] 형태의 JSON 생성.
@@ -26,6 +26,11 @@ from datetime import datetime
 
 TRANSCRIPT_BASE = os.path.expanduser("~/.claude/projects")
 
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
 # system-reminder 등 스킵 대상 태그
 SKIP_TAGS = (
     "<system-reminder>",
@@ -40,6 +45,13 @@ SKIP_TAGS = (
 EMAIL_ALIAS = {
     "jobskim@icloud.com": "ty@eoeoeo.net",
 }
+
+
+def console_print(text: str = "") -> None:
+    """Windows cp949 콘솔/Task Scheduler에서도 출력 때문에 죽지 않게 한다."""
+    encoding = getattr(sys.stdout, "encoding", None) or "utf-8"
+    safe = text.encode(encoding, errors="replace").decode(encoding, errors="replace")
+    print(safe)
 
 
 def sanitize_email(email: str) -> str:
@@ -616,7 +628,7 @@ def push_to_api(email: str, sessions: list[dict]) -> tuple[int, int]:
                 result = json.loads(resp.read())
                 if result.get("ok"):
                     success += len(batch)
-                    print(f"  ✓ {success}/{len(sessions)} 업로드 완료")
+                    console_print(f"  ✓ {success}/{len(sessions)} 업로드 완료")
                     batch_ok = True
                     break
                 last_error = f"unexpected response: {result}"
@@ -631,12 +643,12 @@ def push_to_api(email: str, sessions: list[dict]) -> tuple[int, int]:
 
             if attempt < MAX_BATCH_RETRIES:
                 sleep_sec = 2 * attempt
-                print(f"  ! 배치 재시도 {attempt}/{MAX_BATCH_RETRIES - 1}: {last_error}")
+                console_print(f"  ! 배치 재시도 {attempt}/{MAX_BATCH_RETRIES - 1}: {last_error}")
                 time.sleep(sleep_sec)
 
         if not batch_ok:
             failed += len(batch)
-            print(f"  ✗ 배치 실패: {last_error}")
+            console_print(f"  ✗ 배치 실패: {last_error}")
         # 배치 간 간격 (Vercel rate limit + 서버 부하 방지)
         if i + BATCH_SIZE < len(sessions):
             time.sleep(2)
@@ -651,7 +663,7 @@ def main():
 
     if not files:
         if is_push:
-            print(f"⚠ {email}: transcript 파일 없음")
+            console_print(f"⚠ {email}: transcript 파일 없음")
             sys.exit(1)
         print(json.dumps({"data": []}))
         return
@@ -669,11 +681,11 @@ def main():
     # --push: API로 직접 업로드
     if is_push:
         if not sessions:
-            print(f"⚠ {email}: 파싱된 세션 0건 (파일 {len(files)}개)")
+            console_print(f"⚠ {email}: 파싱된 세션 0건 (파일 {len(files)}개)")
             sys.exit(1)
-        print(f"📤 {email}: {len(sessions)}개 세션 → Activity API 업로드 중...")
+        console_print(f"📤 {email}: {len(sessions)}개 세션 → Activity API 업로드 중...")
         ok, fail = push_to_api(email, sessions)
-        print(f"✅ 완료: {ok}건 성공, {fail}건 실패")
+        console_print(f"✅ 완료: {ok}건 성공, {fail}건 실패")
         if fail > 0 or ok == 0:
             sys.exit(1)
         return
@@ -688,7 +700,7 @@ def main():
     if out_path:
         with open(out_path, "w", encoding="utf-8") as f:
             f.write(result)
-        print(f"      {email}: {len(sessions)}개 세션")
+        console_print(f"      {email}: {len(sessions)}개 세션")
     else:
         print(result)
 
