@@ -723,7 +723,8 @@ def ensure_activity_script() -> Optional[str]:
         urllib.request.urlretrieve(ACTIVITY_SCRIPT_URL, ACTIVITY_SCRIPT_LOCAL)
         os.chmod(ACTIVITY_SCRIPT_LOCAL, 0o755)
         return "generate_activity.py 신규 설치"
-    except Exception:
+    except Exception as e:
+        print(f"[hook_health] generate_activity.py 다운로드 실패: {e}")
         return None
 
 
@@ -937,9 +938,16 @@ def maybe_daily_reactivity():
 
     script_path = ACTIVITY_SCRIPT_LOCAL
     if not os.path.exists(script_path):
-        # 로컬도 없고 다운로드도 실패한 경우
-        _report_activity_diag(email, "error", "generate_activity.py not available")
-        return
+        # 로컬도 없고 다운로드도 실패한 경우 — 직접 다운로드 1회 더 시도 (에러 캡처)
+        dl_err = ""
+        try:
+            os.makedirs(HOOKS_DIR, exist_ok=True)
+            urllib.request.urlretrieve(ACTIVITY_SCRIPT_URL, script_path)
+            os.chmod(script_path, 0o755)
+        except Exception as e:
+            dl_err = str(e)[:200]
+            _report_activity_diag(email, "error", f"generate_activity.py not available — download failed: {dl_err}")
+            return
 
     try:
         # --push: 15건씩 배치로 API 전송
@@ -958,7 +966,7 @@ def maybe_daily_reactivity():
 
         if result.returncode == 0:
             stdout = result.stdout or ""
-            if "0건 성공" in stdout:
+            if ": 0건 성공," in stdout:
                 next_attempt = attempts + 1
                 _write_marker(today, next_attempt)
                 print(f"[activity] 0건 성공 — 재시도 {next_attempt}/{MAX_DAILY_RETRIES}+")
