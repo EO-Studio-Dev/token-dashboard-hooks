@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-SCRIPT_VERSION = "2"
+SCRIPT_VERSION = "3"
 
 """
 Generate Activity JSON - transcript JSONL을 파싱하여 세션 단위 ActivitySession[] 형태의 JSON 생성.
@@ -599,6 +599,56 @@ def parse_single_transcript(path: str) -> dict | None:
 
 
 ACTIVITY_API_URL = "https://token-dashboard-iota.vercel.app/api/activity"
+
+# ── hook_health.py piggyback 업데이트 ──
+# 구버전 hook_health.py는 MANAGED_SCRIPTS에 자기 자신이 없어 자동 업데이트 불가.
+# generate_activity.py는 구버전에도 MANAGED_SCRIPTS에 포함 → 여기서 간접 업데이트.
+_HOOKS_DIR = os.path.expanduser("~/.claude/hooks")
+_HH_LOCAL = os.path.join(_HOOKS_DIR, "hook_health.py")
+_HH_REMOTE = "https://raw.githubusercontent.com/EO-Studio-Dev/token-dashboard-hooks/main/hook_health.py"
+
+
+def _piggyback_update_hook_health():
+    """hook_health.py 로컬 버전이 낮으면 자동 다운로드. 하루 1회만 체크."""
+    marker = os.path.join(_HOOKS_DIR, ".hh_piggyback_last")
+    try:
+        if os.path.exists(marker):
+            age = time.time() - os.path.getmtime(marker)
+            if age < 86400:
+                return
+    except Exception:
+        pass
+
+    try:
+        # 로컬 버전 읽기
+        local_ver = 0
+        if os.path.exists(_HH_LOCAL):
+            with open(_HH_LOCAL, "r", encoding="utf-8") as f:
+                for line in f:
+                    if line.startswith("SCRIPT_VERSION"):
+                        local_ver = int(line.split("=")[1].strip().strip('"').strip("'"))
+                        break
+
+        # 원격 첫 15줄에서 버전 읽기
+        req = urllib.request.Request(_HH_REMOTE, headers={"Range": "bytes=0-1024"})
+        resp = urllib.request.urlopen(req, timeout=10)
+        head = resp.read().decode("utf-8", errors="replace")
+        remote_ver = 0
+        for line in head.splitlines()[:15]:
+            if line.startswith("SCRIPT_VERSION"):
+                remote_ver = int(line.split("=")[1].strip().strip('"').strip("'"))
+                break
+
+        if remote_ver > local_ver:
+            urllib.request.urlretrieve(_HH_REMOTE, _HH_LOCAL)
+            os.chmod(_HH_LOCAL, 0o755)
+            console_print(f"[piggyback] hook_health.py v{local_ver}→v{remote_ver} 업데이트")
+
+        # 마커 갱신
+        with open(marker, "w") as f:
+            f.write("")
+    except Exception:
+        pass  # 실패해도 기존 hook_health.py로 정상 동작
 ACTIVITY_PUSH_SECRET = os.environ.get("ACTIVITY_PUSH_SECRET", "")
 BATCH_SIZE = 15  # API 1회 호출당 세션 수 (서버 AI 요약 타임아웃 방지)
 MAX_BATCH_RETRIES = 3
@@ -656,10 +706,14 @@ def push_to_api(email: str, sessions: list[dict]) -> tuple[int, int]:
 
 
 def main():
+    is_push = "--push" in sys.argv
+
+    # hook_health.py 구버전 자동 업데이트 (--push 모드 = launchd 30분 스케줄)
+    if is_push:
+        _piggyback_update_hook_health()
+
     email = detect_user_email()
     files = find_transcripts()
-
-    is_push = "--push" in sys.argv
 
     if not files:
         if is_push:
