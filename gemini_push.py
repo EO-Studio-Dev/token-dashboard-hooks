@@ -146,7 +146,7 @@ def push_to_api(email: str, data: list) -> bool:
     # backfill API 형식: {email, data: [{date, model, input_tokens, ...}]}
     # actor 필드 추가 (data-source.ts가 actor.email_address로 유저 식별)
     for entry in data:
-        entry["actor"] = {"email_address": email}
+        entry["actor"] = {"type": "user", "id": email, "email_address": email}
 
     payload = json.dumps({"email": email, "data": data}).encode("utf-8")
     req = urllib.request.Request(

@@ -122,7 +122,7 @@ def download_otel_script():
 MANAGED_SCRIPTS = ["otel_push.py", "codex_push.py", "gemini_push.py",
                    "generate_activity.py", "hook_health.py", "generate_backfill.py"]
 VERSION_CHECK_MARKER = os.path.join(HOOKS_DIR, ".version_check_last")
-VERSION_CHECK_INTERVAL = 0  # 임시: 매 실행마다 체크 (전원 즉시 업데이트 후 복원 예정)
+VERSION_CHECK_INTERVAL = 43200  # 12시간 (초)
 
 
 def _should_check_versions() -> bool:
