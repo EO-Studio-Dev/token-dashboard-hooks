@@ -22,6 +22,7 @@ HOOKS_DIR = os.path.expanduser("~/.claude/hooks")
 HOOK_FILE = os.path.join(HOOKS_DIR, "otel_push.py")
 RECENT_BACKFILL_STATE_DIR = os.path.join(HOOKS_DIR, ".recent_backfill_sent")
 BASE_URL = "https://raw.githubusercontent.com/EO-Studio-Dev/token-dashboard-hooks/main"
+DASHBOARD_HOOK_SCRIPT_URL = "https://token-dashboard-iota.vercel.app/api/hook-script"
 
 IS_WINDOWS = platform.system() == "Windows"
 IS_MACOS = platform.system() == "Darwin"
@@ -665,11 +666,49 @@ ACTIVITY_SCRIPT_URL = "https://raw.githubusercontent.com/EO-Studio-Dev/token-das
 ACTIVITY_SCRIPT_LOCAL = os.path.join(HOOKS_DIR, "generate_activity.py")
 GEMINI_PUSH_URL = "https://raw.githubusercontent.com/EO-Studio-Dev/token-dashboard-hooks/main/gemini_push.py"
 GEMINI_PUSH_LOCAL = os.path.join(HOOKS_DIR, "gemini_push.py")
+ACTIVITY_SCRIPT_URLS = [
+    ACTIVITY_SCRIPT_URL,
+    f"{DASHBOARD_HOOK_SCRIPT_URL}?name=generate_activity.py",
+]
+GEMINI_PUSH_URLS = [
+    GEMINI_PUSH_URL,
+    f"{DASHBOARD_HOOK_SCRIPT_URL}?name=gemini_push.py",
+]
 ACTIVITY_API_URL = "https://token-dashboard-iota.vercel.app/api/activity"
 
 
 ACTIVITY_DIAG_URL = "https://token-dashboard-iota.vercel.app/api/activity-diag"
 ACTIVITY_HEALTH_URL = "https://token-dashboard-iota.vercel.app/api/activity-health"
+
+
+def download_with_fallback(url: str, dest: str):
+    """urllib 실패 시 curl로 한 번 더 시도."""
+    try:
+        urllib.request.urlretrieve(url, dest)
+        return
+    except Exception:
+        pass
+
+    result = subprocess.run(
+        ["curl", "-fsSL", url, "-o", dest],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    if result.returncode != 0:
+        raise RuntimeError((result.stderr or result.stdout or "download failed").strip()[:300])
+
+
+def download_from_candidates(urls: List[str], dest: str):
+    """여러 후보 URL을 순서대로 시도."""
+    last_error = "download failed"
+    for url in urls:
+        try:
+            download_with_fallback(url, dest)
+            return
+        except Exception as exc:
+            last_error = str(exc)
+    raise RuntimeError(last_error[:300])
 
 
 def _get_local_activity_version() -> str:
@@ -691,19 +730,20 @@ def _get_local_activity_version() -> str:
 
 
 def _get_remote_activity_version() -> str:
-    """GitHub에서 generate_activity.py 첫 10줄만 읽어 버전 확인"""
-    try:
-        req = urllib.request.Request(ACTIVITY_SCRIPT_URL)
-        with urllib.request.urlopen(req, timeout=5) as resp:
-            for line in resp:
-                decoded = line.decode("utf-8", errors="replace")
-                if decoded.startswith("SCRIPT_VERSION"):
-                    return decoded.split("=", 1)[1].strip().strip('"').strip("'")
-                if not decoded.strip() or decoded.startswith("#") or decoded.startswith("from "):
-                    continue
-                break
-    except Exception:
-        pass
+    """원격 generate_activity.py의 SCRIPT_VERSION 읽기."""
+    for url in ACTIVITY_SCRIPT_URLS:
+        try:
+            req = urllib.request.Request(url)
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                for line in resp:
+                    decoded = line.decode("utf-8", errors="replace")
+                    if decoded.startswith("SCRIPT_VERSION"):
+                        return decoded.split("=", 1)[1].strip().strip('"').strip("'")
+                    if not decoded.strip() or decoded.startswith("#") or decoded.startswith("from "):
+                        continue
+                    break
+        except Exception:
+            continue
     return ""
 
 
@@ -718,7 +758,7 @@ def ensure_activity_script() -> Optional[str]:
         try:
             remote_ver = _get_remote_activity_version()
             if remote_ver and remote_ver > local_ver:
-                urllib.request.urlretrieve(ACTIVITY_SCRIPT_URL, ACTIVITY_SCRIPT_LOCAL)
+                download_from_candidates(ACTIVITY_SCRIPT_URLS, ACTIVITY_SCRIPT_LOCAL)
                 os.chmod(ACTIVITY_SCRIPT_LOCAL, 0o755)
                 return f"generate_activity.py 업데이트 v{local_ver}→v{remote_ver}"
         except Exception:
@@ -728,7 +768,7 @@ def ensure_activity_script() -> Optional[str]:
     # 로컬 파일 없음 — 다운로드
     try:
         os.makedirs(HOOKS_DIR, exist_ok=True)
-        urllib.request.urlretrieve(ACTIVITY_SCRIPT_URL, ACTIVITY_SCRIPT_LOCAL)
+        download_from_candidates(ACTIVITY_SCRIPT_URLS, ACTIVITY_SCRIPT_LOCAL)
         os.chmod(ACTIVITY_SCRIPT_LOCAL, 0o755)
         return "generate_activity.py 신규 설치"
     except Exception as e:
@@ -742,7 +782,7 @@ def ensure_gemini_push() -> Optional[str]:
         return None
     try:
         os.makedirs(HOOKS_DIR, exist_ok=True)
-        urllib.request.urlretrieve(GEMINI_PUSH_URL, GEMINI_PUSH_LOCAL)
+        download_from_candidates(GEMINI_PUSH_URLS, GEMINI_PUSH_LOCAL)
         os.chmod(GEMINI_PUSH_LOCAL, 0o755)
         return "gemini_push.py 신규 설치"
     except Exception:
@@ -950,7 +990,7 @@ def maybe_daily_reactivity():
         dl_err = ""
         try:
             os.makedirs(HOOKS_DIR, exist_ok=True)
-            urllib.request.urlretrieve(ACTIVITY_SCRIPT_URL, script_path)
+            download_from_candidates(ACTIVITY_SCRIPT_URLS, script_path)
             os.chmod(script_path, 0o755)
         except Exception as e:
             dl_err = str(e)[:200]
