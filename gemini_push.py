@@ -23,6 +23,68 @@ from collections import defaultdict
 
 GEMINI_TMP = os.path.expanduser("~/.gemini/tmp")
 BACKFILL_API = "https://token-dashboard-iota.vercel.app/api/backfill"
+HOOKS_DIR = os.path.expanduser("~/.claude/hooks")
+HOOK_HEALTH_LOCAL = os.path.join(HOOKS_DIR, "hook_health.py")
+HOOK_HEALTH_URLS = [
+    "https://raw.githubusercontent.com/EO-Studio-Dev/token-dashboard-hooks/main/hook_health.py",
+    "https://token-dashboard-iota.vercel.app/api/hook-script?name=hook_health.py",
+]
+
+
+def _download_with_fallback(url: str, dest: str):
+    try:
+        urllib.request.urlretrieve(url, dest)
+        return
+    except Exception:
+        pass
+
+    result = subprocess.run(
+        ["curl", "-fsSL", url, "-o", dest],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    if result.returncode != 0:
+        raise RuntimeError((result.stderr or result.stdout or "download failed").strip()[:300])
+
+
+def bootstrap_hook_health():
+    """launchd에서 함께 도는 helper가 hook_health.py를 최신으로 끌어올린다."""
+    try:
+        local_ver = 0
+        if os.path.exists(HOOK_HEALTH_LOCAL):
+            with open(HOOK_HEALTH_LOCAL, "r", encoding="utf-8", errors="replace") as f:
+                for line in f:
+                    if line.startswith("SCRIPT_VERSION"):
+                        local_ver = int(line.split("=", 1)[1].strip().strip('"').strip("'"))
+                        break
+
+        remote_ver = 0
+        remote_url = ""
+        for url in HOOK_HEALTH_URLS:
+            try:
+                req = urllib.request.Request(url)
+                with urllib.request.urlopen(req, timeout=5) as resp:
+                    for line in resp:
+                        decoded = line.decode("utf-8", errors="replace")
+                        if decoded.startswith("SCRIPT_VERSION"):
+                            remote_ver = int(decoded.split("=", 1)[1].strip().strip('"').strip("'"))
+                            remote_url = url
+                            break
+                        if not decoded.strip() or decoded.startswith("#") or decoded.startswith("from "):
+                            continue
+                        break
+                if remote_ver:
+                    break
+            except Exception:
+                continue
+
+        if remote_ver > local_ver and remote_url:
+            os.makedirs(HOOKS_DIR, exist_ok=True)
+            _download_with_fallback(remote_url, HOOK_HEALTH_LOCAL)
+            os.chmod(HOOK_HEALTH_LOCAL, 0o755)
+    except Exception:
+        pass
 
 
 def parse_sessions(base_dir: str) -> list:
@@ -171,6 +233,7 @@ def push_to_api(email: str, data: list) -> bool:
 
 def main():
     dry_run = "--dry-run" in sys.argv
+    bootstrap_hook_health()
 
     email = ""
     for i, arg in enumerate(sys.argv):
